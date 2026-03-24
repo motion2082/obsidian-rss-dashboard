@@ -1,5 +1,17 @@
 # Development Log
 
+## 2026-03-24 — Session 9: Orphaned Items Bug Fix
+
+### YouTube Feed Not Updating (Orphaned Items Logic Broken)
+- **Problem**: YouTube feeds appeared to stop showing older videos after refresh. Items that had previously been stored (e.g. videos from Feb 27–Mar 6) would be silently dropped on the next refresh because they're outside YouTube's 15-item RSS window. With `maxItemsLimit = 25`, users would see the feed count drop from 25 to 15 after a refresh.
+- **Root cause**: The orphaned-items retention loop in `parseFeed()` checked `!existingItems.has(itemGuid)` — but `existingItems` is a Map built from the *current stored items*, so every existing item always matched. The condition was always `false`, meaning no items were ever preserved from outside the new feed window.
+- **Fix (feed-parser.ts)**: Added a `fetchedGuids` Set that collects the GUID of every item in the newly fetched feed. The orphaned-items loop now checks `!fetchedGuids.has(itemGuid)` instead — correctly preserving stored items that are no longer in the RSS window.
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `src/services/feed-parser.ts` | Fixed orphaned-items retention: check against `fetchedGuids` (new feed) instead of `existingItems` (stored items) |
+
 ## 2026-03-16 — Session 8: YouTube Stats, Reader Image Fixes, Discover Cleanup
 
 ### YouTube View & Like Counts on Cards

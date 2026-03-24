@@ -2155,8 +2155,11 @@ export class FeedParser {
             const newItems: FeedItem[] = [];
             const updatedItems: FeedItem[] = [];
 
+            // Track GUIDs present in the newly fetched feed so the orphaned-items
+            // section below can preserve existing items that are no longer in it.
+            const fetchedGuids = new Set<string>();
+
             parsed.items.forEach((item: ParsedItem) => {
-                
                 const isAudioEnclosure = item.enclosure?.type?.startsWith('audio/');
                 const isAudioLink = !!(item.link && item.link.includes('.mp3'));
             const isPodcast = isAudioEnclosure || isAudioLink;
@@ -2175,6 +2178,7 @@ export class FeedParser {
 
                 const rawGuid = item.guid || item.link || '';
                 const itemGuid = rawGuid.startsWith('http') ? this.convertToAbsoluteUrl(rawGuid, url) : rawGuid;
+                fetchedGuids.add(itemGuid);
                 const existingItem = existingItems.get(itemGuid);
                 
                 if (existingItem) {
@@ -2287,8 +2291,9 @@ export class FeedParser {
                     const rawGuid = item.guid || item.link || '';
                     const itemGuid = rawGuid.startsWith('http') ? this.convertToAbsoluteUrl(rawGuid, url) : rawGuid;
 
-                    if (!existingItems.has(itemGuid)) {
-                        
+                    // Preserve items that are no longer in the newly fetched feed
+                    // (e.g. older videos that fell off the YouTube RSS 15-item window)
+                    if (!fetchedGuids.has(itemGuid)) {
                         allItems.push(item);
                     }
                 });
