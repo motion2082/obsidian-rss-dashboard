@@ -2,6 +2,44 @@ import { requestUrl, Platform } from "obsidian";
 import { Feed, FeedItem, MediaSettings, Tag } from "../types/types.js";
 import { MediaService } from "./media-service";
 
+// Some feeds publish icon/image URLs with a stray trailing slash (Reddit's Atom
+// <icon> is https://www.redditstatic.com/icon.png/ for example), which 404s.
+// Trim the slash when the last path segment is clearly a file name.
+const IMAGE_FILE_EXT = /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)$/i;
+
+function sanitizeImageUrl(url: string | null | undefined): string {
+    const trimmed = (url || '').trim();
+    if (!trimmed) return '';
+    const withoutTrailingSlash = trimmed.replace(/\/+$/, '');
+    return IMAGE_FILE_EXT.test(withoutTrailingSlash) ? withoutTrailingSlash : trimmed;
+}
+
+// Reddit throttles unauthenticated clients on www.reddit.com hard (HTTP 429).
+// old.reddit.com serves the same feed with much looser limits.
+function normalizeFeedUrl(url: string): string {
+    return url.replace(/^(https?:\/\/)(www\.)?reddit\.com\//i, '$1old.reddit.com/');
+}
+
+// A feed that answers 429 is skipped for a while rather than being retried
+// through the whole direct -> proxy -> discovery chain on every refresh cycle.
+const RATE_LIMIT_COOLDOWN_MS = 15 * 60 * 1000;
+const rateLimitedUntil = new Map<string, number>();
+
+function markRateLimited(url: string): void {
+    rateLimitedUntil.set(url, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+}
+
+export function getRateLimitCooldownRemaining(url: string): number {
+    const until = rateLimitedUntil.get(url);
+    if (until === undefined) return 0;
+    const remaining = until - Date.now();
+    if (remaining <= 0) {
+        rateLimitedUntil.delete(url);
+        return 0;
+    }
+    return remaining;
+}
+
 // Type definitions for external API responses
 interface AllOriginsResponse {
     contents: string;
@@ -193,6 +231,7 @@ async function discoverFeedUrl(baseUrl: string): Promise<string | null> {
 
 export async function fetchFeedXml(url: string): Promise<string> {
     const isAndroid = Platform.isAndroidApp;
+    const fetchUrl = normalizeFeedUrl(url);
     
     
     async function tryFetch(targetUrl: string): Promise<string> {
@@ -389,6 +428,9 @@ export async function fetchFeedXml(url: string): Promise<string> {
             throw new Error('Not a valid RSS/Atom feed');
         } catch (error) {
             
+            if (/status 429/i.test((error as Error)?.message || '')) {
+                markRateLimited(url);
+            }
             console.warn(`[RSS dashboard] direct fetch failed for ${targetUrl}, trying AllOrigins proxy...`, error);
             
             try {
@@ -466,7 +508,9 @@ export async function fetchFeedXml(url: string): Promise<string> {
     }
     
     try {
-        return await tryFetch(url);
+        const xml = await tryFetch(fetchUrl);
+        rateLimitedUntil.delete(url);
+        return xml;
     } catch (error) {
         
         if (isAndroid) {
@@ -476,7 +520,7 @@ export async function fetchFeedXml(url: string): Promise<string> {
         
         
         try {
-            const proxyUrl = `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`;
+            const proxyUrl = `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(fetchUrl)}`;
             const proxyResponse = await requestUrl({ url: proxyUrl, method: "GET", headers: {
                 "Accept": "application/rss+xml, application/atom+xml, application/rdf+xml, application/xml, text/xml;q=0.9, */*;q=0.8"
             }});
@@ -488,7 +532,7 @@ export async function fetchFeedXml(url: string): Promise<string> {
             }
         } catch {
             try {
-                const rss2jsonUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(url)}`;
+                const rss2jsonUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(fetchUrl)}`;
                 const proxyResponse = await requestUrl({ url: rss2jsonUrl, method: "GET" });
                 const data = JSON.parse(proxyResponse.text) as Rss2JsonResponse;
                 
@@ -945,14 +989,14 @@ export class CustomXMLParser {
         
         
         const imageElement = channel.querySelector('image');
-        const image = imageElement ? { url: this.getTextContent(imageElement, 'url') } : undefined;
+        const image = imageElement ? { url: sanitizeImageUrl(this.getTextContent(imageElement, 'url')) } : undefined;
 
         
         const itunesImageElement = channel.querySelector('itunes\\:image');
         const itunesImage = itunesImageElement ? { url: itunesImageElement.getAttribute('href') || '' } : undefined;
         
         const feedItunesImage = itunesImageElement ? itunesImageElement.getAttribute('href') || '' : '';
-        const feedImageUrl = imageElement ? this.getTextContent(imageElement, 'url') : '';
+        const feedImageUrl = imageElement ? sanitizeImageUrl(this.getTextContent(imageElement, 'url')) : '';
 
         const items: ParsedItem[] = [];
         const itemElements = channel.querySelectorAll('item');
@@ -1031,7 +1075,7 @@ export class CustomXMLParser {
 
             
             const itemImageElement = item.querySelector('image');
-            const itemImage = itemImageElement ? { url: this.getTextContent(itemImageElement, 'url') } : undefined;
+            const itemImage = itemImageElement ? { url: sanitizeImageUrl(this.getTextContent(itemImageElement, 'url')) } : undefined;
 
             
             let mediaImage = '';
@@ -1096,12 +1140,12 @@ export class CustomXMLParser {
         if (imageRef) {
             const imageResource = imageRef.getAttribute('rdf:resource');
             if (imageResource) {
-                image = { url: this.convertAppUrls(imageResource) };
+                image = { url: sanitizeImageUrl(this.convertAppUrls(imageResource)) };
             } else {
                 
                 const imageUrl = this.getTextContent(imageRef, 'url');
                 if (imageUrl) {
-                    image = { url: this.convertAppUrls(imageUrl) };
+                    image = { url: sanitizeImageUrl(this.convertAppUrls(imageUrl)) };
                 }
             }
         }
@@ -1193,7 +1237,8 @@ export class CustomXMLParser {
         const author = this.getTextContent(feed, 'author > name');
         
         const iconElement = feed.querySelector('icon');
-        const image = iconElement ? { url: iconElement.textContent || '' } : undefined;
+        const iconUrl = iconElement ? sanitizeImageUrl(iconElement.textContent) : '';
+        const image = iconUrl ? { url: iconUrl } : undefined;
 
         const items: ParsedItem[] = [];
         const entryElements = Array.from(feed.getElementsByTagName('entry'));
@@ -2472,6 +2517,13 @@ export class FeedParser {
         const failedFeeds: string[] = [];
 
         for (const feed of feeds) {
+            const cooldown = getRateLimitCooldownRemaining(feed.url);
+            if (cooldown > 0) {
+                console.debug(`[RSS dashboard] Skipping "${feed.title}" - rate limited (429), retrying in ~${Math.ceil(cooldown / 60000)} min`);
+                updatedFeeds.push(feed);
+                continue;
+            }
+
             try {
                 const refreshedFeed = await this.refreshFeed(feed);
                 updatedFeeds.push(refreshedFeed);
