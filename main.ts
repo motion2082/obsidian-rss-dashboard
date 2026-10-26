@@ -31,6 +31,7 @@ export default class RssDashboardPlugin extends Plugin {
     feedParser!: FeedParser;
     articleSaver!: ArticleSaver;
     private importStatusBarItem: HTMLElement | null = null;
+    private refreshTimerId: number | null = null;
     public backgroundImportQueue: FeedMetadata[] = [];
     private isBackgroundImporting = false;
     
@@ -82,7 +83,6 @@ export default class RssDashboardPlugin extends Plugin {
 
 
         await this.loadSettings();
-
 
         const view = await this.getActiveDashboardView();
         if (view) {
@@ -211,21 +211,27 @@ export default class RssDashboardPlugin extends Plugin {
             });
     
             
-            this.registerInterval(
-                window.setInterval(
-                    () => { void this.refreshFeeds(); },
-                    this.settings.refreshInterval * 60 * 1000
-                )
-            );
-            
-            
+            this.restartRefreshTimer();
+
+
         } catch {
             
             new Notice("Error initializing RSS dashboard plugin.");
         }
     }
 
-    
+    restartRefreshTimer(): void {
+        if (this.refreshTimerId !== null) {
+            window.clearInterval(this.refreshTimerId);
+        }
+        this.refreshTimerId = window.setInterval(
+            () => { void this.refreshFeeds(); },
+            this.settings.refreshInterval * 60 * 1000
+        );
+        this.registerInterval(this.refreshTimerId);
+    }
+
+
     private applyMobileOptimizations(): void {
         
         if (this.settings.refreshInterval < 60) {

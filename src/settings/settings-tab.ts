@@ -240,17 +240,31 @@ export class RssDashboardSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName("Refresh interval")
-            .setDesc("How often to refresh feeds (in minutes)")
-            .addSlider((slider) =>
-                slider
-                    .setLimits(5, 120, 5)
-                    .setValue(this.plugin.settings.refreshInterval)
-                    .setDynamicTooltip()
+            .setDesc("How often to refresh feeds automatically")
+            .addDropdown((dropdown) => {
+                const options: Record<string, string> = {
+                    "15": "Every 15 minutes",
+                    "30": "Every 30 minutes",
+                    "60": "Every hour",
+                    "120": "Every 2 hours",
+                    "180": "Every 3 hours",
+                    "360": "Every 6 hours",
+                    "720": "Every 12 hours",
+                    "1440": "Every 24 hours",
+                };
+                const current = String(this.plugin.settings.refreshInterval);
+                if (!(current in options)) {
+                    options[current] = `Every ${current} minutes`;
+                }
+                dropdown
+                    .addOptions(options)
+                    .setValue(current)
                     .onChange(async (value) => {
-                        this.plugin.settings.refreshInterval = value;
+                        this.plugin.settings.refreshInterval = Number(value);
                         await this.plugin.saveSettings();
-                    })
-            );
+                        this.plugin.restartRefreshTimer();
+                    });
+            });
 
         new Setting(containerEl)
             .setName("Maximum items")
